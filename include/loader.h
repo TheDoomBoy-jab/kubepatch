@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <symbol_table.h>
 
 typedef struct{
     uint8_t *file_bytes;
@@ -19,7 +20,7 @@ typedef struct{
 
 int load_macho_object(const char *filepath, objectbinary *out_bin);
 
-int find_symbol_offset(const objectbinary *bin, const char *symbol_name, uint64_t *out_offset);
+int find_symbol_offset(const objectbinary *bin, const char *symbol_name, uint64_t *out_offset, symbolbinding *out_binding);
 
 void free_macho_object(objectbinary *bin);
 

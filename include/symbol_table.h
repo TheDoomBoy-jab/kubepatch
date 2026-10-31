@@ -24,11 +24,11 @@ typedef struct{
     size_t count;
 }symboltable;
 
-void syntab_init(symboltable *table);
+void symtab_init(symboltable *table);
 
 int symtab_register(symboltable *table, const char *name, void *address, symbolbinding binding );
 
-void *syntab_lookup(const symboltable *table, const char *name);
+void *symtab_lookup(const symboltable *table, const char *name);
 
 void symtab_print(const symboltable *table);
 

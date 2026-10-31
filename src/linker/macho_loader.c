@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
+
+#include "symbol_table.h"
 int load_macho_object(const char *filepath, objectbinary *out_bin) {
     if (!filepath || !out_bin) return -1;
     memset(out_bin, 0, sizeof(objectbinary));
@@ -70,14 +72,22 @@ int load_macho_object(const char *filepath, objectbinary *out_bin) {
 
 }
 
-int find_symbol_offset(const objectbinary *bin, const char *symbol_name, uint64_t *out_offset) {
+int find_symbol_offset(const objectbinary *bin, const char *symbol_name, uint64_t *out_offset, symbolbinding *out_binding ) {
     if (!bin || !symbol_name || !out_offset) return -1;
-    struct nlist_64 *syms = (struct nlist_64 *)(bin->file_bytes + bin->symoff);
+     struct nlist_64 *syms = (struct nlist_64 *)(bin->file_bytes + bin->symoff);
     const char *strtab = (const char *)(bin->file_bytes + bin->stroff);
     for (uint32_t i = 0; i < bin->nsyms; i++) {
         const char *name = strtab + syms[i].n_un.n_strx;
         if (strcmp(name, symbol_name) == 0) {
             *out_offset = syms[i].n_value;
+            if (out_binding) {
+                // In Mach-O, bit 0x0080 (N_WEAK_DEF) in n_desc marks a weak symbol definition
+                if (syms[i].n_desc & N_WEAK_DEF) {
+                    *out_binding = SYM_WEAK;
+                } else {
+                    *out_binding = SYM_STRONG;
+                }
+            }
             return 0;
         }
     }
