@@ -1,36 +1,30 @@
 #ifndef SYMBOL_TABLE_H
 #define SYMBOL_TABLE_H
 
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stddef.h>
+
 #define MAX_SYMBOLS 256
 #define MAX_SYM_NAME 64
 
-#include <stdint.h>
+typedef enum { SYM_WEAK, SYM_STRONG } symbolbinding;
 
-#include <stddef.h>
-
-typedef enum{
-SYM_WEAK,
-SYM_STRONG
-}symbolbinding;
-
-typedef struct{
+typedef struct {
     char name[MAX_SYM_NAME];
-    void *address;
+    _Atomic(void *) address;
     symbolbinding binding;
 } symbolentry;
 
-typedef struct{
+typedef struct {
     symbolentry entries[MAX_SYMBOLS];
-    size_t count;
-}symboltable;
+    atomic_size_t count;
+    pthread_mutex_t writer;
+} symboltable;
 
-void symtab_init(symboltable *table);
-
-int symtab_register(symboltable *table, const char *name, void *address, symbolbinding binding );
-
+int symtab_init(symboltable *table);
+void symtab_destroy(symboltable *table);
+int symtab_register(symboltable *table, const char *name, void *address, symbolbinding binding);
 void *symtab_lookup(const symboltable *table, const char *name);
 
-void symtab_print(const symboltable *table);
-
 #endif
-

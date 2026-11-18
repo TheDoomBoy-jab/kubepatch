@@ -1,76 +1,115 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
-#include <time.h>
 #include "shm_context.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define TIMEOUT_NS (10ULL * 1000000000)
+
+static bool parse_count(const char *value, uint32_t *out) {
+    char *end;
+    errno = 0;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (errno || *value < '0' || *value > '9' || *end || parsed == 0 || parsed > UINT32_MAX) {
+        return false;
+    }
+    *out = (uint32_t)parsed;
+    return true;
+}
+
+static size_t reserve_slot(ShmContext *shm) {
+    uint64_t start = monotonic_ns();
+    while (atomic_load_explicit(&shm->ready, memory_order_acquire) == SHM_ABI &&
+           monotonic_ns() - start < TIMEOUT_NS) {
+        for (size_t i = 0; i < WORK_SLOT_COUNT; i++) {
+            unsigned expected = WORK_FREE;
+            if (atomic_compare_exchange_strong_explicit(&shm->slots[i].state, &expected,
+                                                         WORK_RESERVED, memory_order_acquire,
+                                                         memory_order_relaxed)) {
+                return i;
+            }
+        }
+        poll_pause();
+    }
+    return WORK_SLOT_COUNT;
+}
+
+static bool run_task(ShmContext *shm, size_t index, uint32_t client, uint32_t sequence) {
+    enum kernel_id kernel = KERNEL_GEMM + sequence % 3;
+    uint64_t id = ((uint64_t)client << 32) | sequence;
+    work_slot *slot = &shm->slots[index];
+    taskdescriptor task = work_prepare(shm->slots, index, id, client, kernel);
+    while (!ringbuffer_enqueue(&shm->ring, &task)) {
+        if (atomic_load_explicit(&shm->ready, memory_order_acquire) != SHM_ABI ||
+            monotonic_ns() - slot->started_ns >= TIMEOUT_NS) {
+            atomic_store_explicit(&slot->state, WORK_FREE, memory_order_release);
+            return false;
+        }
+        poll_pause();
+    }
+
+    for (;;) {
+        unsigned state = atomic_load_explicit(&slot->state, memory_order_acquire);
+        if (state == WORK_DONE || state == WORK_FAILED) {
+            bool ok = work_verify(slot, kernel);
+            atomic_store_explicit(&slot->state, WORK_FREE, memory_order_release);
+            return ok;
+        }
+        if (atomic_load_explicit(&shm->ready, memory_order_acquire) != SHM_ABI ||
+            monotonic_ns() - slot->started_ns >= TIMEOUT_NS) {
+            // Leave owned storage alone because the daemon may still be using it.
+            return false;
+        }
+        poll_pause();
+    }
+}
+
 int main(int argc, char **argv) {
-    uint32_t pod_id = 1;
-    int num_tasks = 10000;
-    if (argc > 1) pod_id = (uint32_t)atoi(argv[1]);
-    if (argc > 2) num_tasks = atoi(argv[2]);
+    uint32_t client = 1;
+    uint32_t count = 10000;
+    if (argc > 3 || (argc > 1 && !parse_count(argv[1], &client)) ||
+        (argc > 2 && !parse_count(argv[2], &count))) {
+        fprintf(stderr, "Usage: %s [positive-client-id] [positive-task-count]\n", argv[0]);
+        return 2;
+    }
 
-    // 1. Connect to shared memory
-    int fd = shm_open(SHM_NAME, O_RDWR, 0666);
+    const char *name = shm_context_name();
+    int fd = shm_open(name, O_RDWR, 0);
     if (fd < 0) {
-        fprintf(stderr, "[-] Pod %u: Daemon is not running! Cannot open %s\n", pod_id, SHM_NAME);
+        perror(name);
         return 1;
     }
-
-    ShmContext *shm = (ShmContext *)mmap(NULL, sizeof(ShmContext), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(ShmContext)) {
+        fprintf(stderr, "%s: daemon is starting or uses another shared-memory layout\n", name);
+        close(fd);
+        return 1;
+    }
+    ShmContext *shm = mmap(NULL, sizeof(*shm), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
-
     if (shm == MAP_FAILED) {
-        perror("[-] mmap failed");
+        perror("mmap");
         return 1;
     }
-
-    // Wait for daemon to be ready
-    while (!atomic_load(&shm->daemon_ready)) {
-        usleep(1000);
+    if (atomic_load_explicit(&shm->ready, memory_order_acquire) != SHM_ABI) {
+        fprintf(stderr, "%s: daemon is not ready\n", name);
+        munmap(shm, sizeof(*shm));
+        return 1;
     }
-
-    printf("[Pod %u] Connected to KubePatch daemon. Submitting %d mixed tensor tasks...\n", pod_id, num_tasks);
-
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
-    for (int i = 0; i < num_tasks; i++) {
-        // Allocate space in shared arena
-        size_t bytes = 16 * 16 * sizeof(float) * 3;
-        size_t prev_off = atomic_fetch_add(&shm->arena_offset, bytes);
-        if (prev_off + bytes >= ARENA_SHM_CAPACITY) {
-            atomic_store(&shm->arena_offset, 0);
-            prev_off = 0;
-        }
-
-        taskdescriptor task;
-        task.task_id = ((uint64_t)pod_id << 32) | i;
-        task.client_id = pod_id;
-        
-        // Rotate through all 3 kernels!
-        // 1 = GEMM, 2 = LayerNorm, 3 = ReLU
-        task.kernel_id = (i % 3) + 1;
-        task.input_buffer_offset = prev_off;
-        task.output_buffer_offset = prev_off + (16 * 16 * sizeof(float) * 2);
-        task.dim_m = 16;
-        task.dim_n = 16;
-        task.dim_k = 16;
-
-        // Push to lock-free ring buffer
-        while (!ringbuffer_enqueue(&shm->ring, &task)) {
-            #if defined(__aarch64__)
-            __asm__ volatile("yield");
-            #endif
+    for (uint32_t i = 0; i < count; i++) {
+        size_t index = reserve_slot(shm);
+        if (index == WORK_SLOT_COUNT || !run_task(shm, index, client, i)) {
+            fprintf(stderr, "Client %" PRIu32 ": task %" PRIu32 " timed out or failed validation\n", client, i);
+            munmap(shm, sizeof(*shm));
+            return 1;
         }
     }
-
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-    printf("[Pod %u] Completed submitting %d tasks in %.4f sec (%.2f tasks/sec)\n", 
-           pod_id, num_tasks, elapsed, (double)num_tasks / elapsed);
-
+    munmap(shm, sizeof(*shm));
+    printf("Client %" PRIu32 " verified %" PRIu32 " tasks\n", client, count);
     return 0;
 }

@@ -1,21 +1,18 @@
 #ifndef SHM_CONTEXT_H
 #define SHM_CONTEXT_H
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdatomic.h>
 #include "ringbuffer.h"
+#include "workload.h"
 
-#define SHM_NAME "/kubepatch_shm"
-#define ARENA_SHM_CAPACITY (64 * 1024 * 1024) // 64 MB for tensor data
+#define SHM_NAME "/kubepatch_v2"
+#define SHM_ABI 2
 
-// Structure mapped directly into /dev/shm
 typedef struct {
-    mpmcringbuffer ring;                // Lock-free task queue
-    atomic_size_t arena_offset;        // Atomic bump pointer for tensor arena
-    atomic_bool daemon_ready;          // Daemon signals clients when ready
-    atomic_size_t tasks_completed;     // Global completion counter
-    uint8_t arena_data[ARENA_SHM_CAPACITY]; // Raw shared tensor memory
+    atomic_uint ready;
+    mpmcringbuffer ring;
+    work_slot slots[WORK_SLOT_COUNT];
 } ShmContext;
+
+const char *shm_context_name(void);
 
 #endif

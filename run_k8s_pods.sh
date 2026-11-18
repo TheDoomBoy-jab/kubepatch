@@ -1,18 +1,17 @@
 #!/bin/bash
-NUM_PODS=16
-TASKS_PER_POD=10000
-
-echo "=== Launching $NUM_PODS Concurrent Pod Processes ==="
-
+# Compatibility entry point for the local process demo.
+# Start kubepatch_daemon separately before running this script.
+set -u
+cd "$(dirname "$0")" || exit 1
+count=${1:-1000}
 pids=()
-for ((i=1; i<=NUM_PODS; i++)); do
-    ./pod_client $i $TASKS_PER_POD &
-    pids+=($!)
+for ((i=1; i<=16; ++i)); do
+    ./pod_client "$i" "$count" &
+    pids+=("$!")
 done
 
-# Wait for all 16 pods to complete
+status=0
 for pid in "${pids[@]}"; do
-    wait $pid
+    wait "$pid" || status=1
 done
-
-echo "=== All $NUM_PODS Pods Finished Submitting Tasks! ==="
+exit "$status"

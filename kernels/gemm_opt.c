@@ -1,4 +1,8 @@
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
 #include "sse2neon.h"
+#pragma clang diagnostic pop
+
 void gemm_compute(const float *A, const float *B, float *C, int M, int N, int K) {
     for (int i = 0; i < M; i++) {
         for (int j = 0; j < N; j++) {
@@ -17,11 +21,7 @@ void gemm_compute(const float *A, const float *B, float *C, int M, int N, int K)
                     B[(k + 0) * N + j]
                 );
 
-                #if defined(__FMA__)
-
-                #else
                 sum_vec = _mm_add_ps(sum_vec, _mm_mul_ps(a_vec, b_vec));
-                #endif
             }
             
             __m128 shuf = _mm_shuffle_ps(sum_vec, sum_vec, _MM_SHUFFLE(2, 3, 0, 1));

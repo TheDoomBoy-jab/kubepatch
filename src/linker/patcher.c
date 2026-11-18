@@ -6,7 +6,7 @@
 #include <sys/mman.h>
 #include <libkern/OSCacheControl.h>
 
-void *create_exceutable_code(const uint8_t *code_bytes, size_t code_size){
+void *create_executable_code(const uint8_t *code_bytes, size_t code_size){
 
     if(!code_bytes || code_size == 0)return NULL;
 

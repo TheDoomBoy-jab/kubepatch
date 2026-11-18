@@ -1,0 +1,6 @@
+*.o
+*.d
+/bench_cluster
+/kubepatch_daemon
+/pod_client
+/tests/runtime_test
